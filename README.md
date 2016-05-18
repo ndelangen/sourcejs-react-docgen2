@@ -1,15 +1,13 @@
-# SourceJS Auto React Doc Builder Middleware
+# SourceJS Auto React Dependencies Builder Middleware
 
-[react-docgen](https://github.com/reactjs/react-docgen) integration plugin, renders React components information into [SourceJS](http://sourcejs.com) Spec page.
+Uses : babylon: "~5.8.3", recast: "^0.10.41" &amp; node-source-walk: "^2.1.0" to renders React components dependencies into [SourceJS](http://sourcejs.com) Spec page.
 
 Compatible with [SourceJS](http://sourcejs.com) 0.6.0+.
 
 ## Install
 
-To install middleware, run npm command in `sourcejs/user` folder:
-
 ```
-npm install sourcejs-react-docgen --save
+npm install sourcejs-react-dependencies --save
 ```
 
 After restarting your app, middleware will be loaded automatically. To disable it, remove npm module and restart the app.

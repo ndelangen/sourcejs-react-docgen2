@@ -1,77 +1,93 @@
-var reactDocgen = require('react-docgen');
+var Promise = require("bluebird");
+var fs = Promise.promisifyAll(require("fs"));
+var glob = require("glob-promise");
 var path = require('path');
-var fs = require('fs');
+
+var fileToAST = require('./fileToAST');
+var extractImports = require('./extractImports');
+
 var ejs = require('ejs');
-var glob = require("glob");
+
 var specUtils = require(path.join(global.pathToApp,'core/lib/specUtils'));
-var currentDir = path.dirname(__filename);
 var sourceJSUtils = require(path.join(global.pathToApp, 'core/lib/utils'));
 
-// Module configuration
-var globalConfig = global.opts.plugins && global.opts.plugins.reactDocgen ? global.opts.plugins.reactDocgen : {};
-var config = {
-    enabled: true,
-    componentPath: '*.jsx',
+var currentDir = path.dirname(__filename);
 
-    // Public object is exposed to Front-end via options API.
-    public: {}
+// Module configuration
+var globalConfig = global.opts.plugins && global.opts.plugins.reactDependencies ? global.opts.plugins.reactDependencies : {};
+var config = {
+	enabled: true,
+	componentPath: '*.jsx',
+	parser: undefined,
+
+	// Public object is exposed to Front-end via options API.
+	public: {}
 };
 sourceJSUtils.extendOptions(config, globalConfig);
 
 /*
- * @param {object} req - Request object
- * @param {object} res - Response object
- * @param {function} next - The callback function
- * */
+* @param {object} req - Request object
+* @param {object} res - Response object
+* @param {function} next - The callback function
+* */
 var processRequest = function (req, res, next) {
-    if (!config.enabled) {
-        next();
-        return;
-    }
 
-    // Check if request is targeting Spec
-    if (req.specData && req.specData.renderedHtml) {
-        var componentDocs = {};
-        var error = false;
-        var specPath = specUtils.getFullPathToSpec(req.path);
-        var componentPathToUse = req.specData.info.main || config.componentPath;
+	// Check if request is targeting Spec
+	if (config.enabled && req.specData && (req.specData.info.role || 'spec') === 'spec') {
+		var specPath = specUtils.getFullPathToSpec(req.path);
+		var componentPath = req.specData.info.main || config.componentPath;
+		var templatePath = path.join(currentDir, '../templates/dependencies.ejs');
 
-        var componentFilePath = glob.sync(componentPathToUse, {
-            cwd: specPath,
-            realpath: true
-        })[0];
+		var dependencyList = Promise.try(function() {
+			return glob(componentPath, {
+				cwd: specPath,
+				realpath: true
+			});
+		}).then(function(filePaths) {
+			return filePaths[0];
+		}).then(function(filePath) {
+			return fileToAST(filePath, config.parser);
+		}).then(function(ast) {
+			return extractImports.extract(ast);
+		}).catch(function(error) {
+			console.warn('sourcejs-react-dependencies: error generating component dependencies', error);
+		});
 
-        if (!fs.existsSync(componentFilePath)) {
-            next();
-            return;
-        }
+		var template = fs.readFileAsync(templatePath, 'utf-8').catch(function(error) {
+			console.warn('sourcejs-react-dependencies: error loading template', error);
+		});
 
-        var componentContent = fs.readFileSync(componentFilePath, 'utf-8');
-        var propsTpl = fs.readFileSync(path.join(currentDir, '../templates/props.ejs'), 'utf-8');
+		Promise.join(dependencyList, template, function(dependencies, template) {
+			var dependenciesList = dependencies
+				.map(function (item) {
+					return {
+						type: extractImports.detectImportType(item),
+						name: item
+					}
+				})
+				.sort(function(a, b) {
+					return a.type < b.type;
+				});
 
-        try {
-            componentDocs = reactDocgen.parse(componentContent);
-        } catch(e) {
-            error = true;
-            console.warn('sourcejs-react-docgen: error generating component doc', e);
-        }
+			req.specData.info.__dependenciesRAW = dependenciesList;
+			req.specData.info.__dependenciesGROUPED = extractImports.groupSimilarTypes(dependencies);
 
-        req.specData.info.__docGenRaw = componentDocs;
+			try {
+				req.specData.info.__dependenciesHTML = ejs.render(template, {data: dependenciesList});
+			} catch (error) {
+				console.warn('sourcejs-react-dependencies: error rendering dependencies', error);
+			}
 
-        if (!error) {
-            try {
-                req.specData.info.__docGenHTML = ejs.render(propsTpl, componentDocs);
-            } catch(e) {
-                console.warn('sourcejs-react-docgen: error rendering docgen props', e);
-            }
-        } else {
-            req.specData.info.__docGenHTML = 'Error preparing react-docgen.'
-        }
-
-        next();
-    } else {
-        next();
-    }
+		}).catch(function (error) {
+			req.specData.info.__dependenciesRAW = [];
+			req.specData.info.__dependenciesGROUPED = {};
+			req.specData.info.__dependenciesHTML = 'Error preparing sourcejs-react-dependencies.'
+		}).finally(function () {
+			next();
+		});
+	} else {
+		next();
+	}
 };
 
 exports.process = processRequest;
